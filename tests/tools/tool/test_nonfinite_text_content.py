@@ -29,6 +29,23 @@ class ExternalReal:
         return str(self.value)
 
 
+class ExtendedFiniteReal(ExternalReal):
+    """Finite scalar whose float coercion saturates outside the float range."""
+
+    def __init__(self, sign: int) -> None:
+        super().__init__(math.inf if sign > 0 else -math.inf)
+        self.exact = Fraction(sign * 10**400)
+
+    def __str__(self) -> str:
+        return str(self.exact)
+
+    def __lt__(self, other: float) -> bool:
+        return self.exact < other
+
+    def __gt__(self, other: float) -> bool:
+        return self.exact > other
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
 @pytest.mark.parametrize("container", ["scalar", "dict", "list", "nested"])
 def test_default_serializer_rejects_nonfinite(value: float, container: str) -> None:
@@ -92,6 +109,30 @@ def test_text_fallback_preserves_finite_reals() -> None:
     assert default_serializer(ExternalReal(2.5)) == '"2.5"'
     large = Fraction(10**400, 3)
     assert default_serializer(large) == f'"{large}"'
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_text_fallback_preserves_extended_finite_reals(sign: int) -> None:
+    value = ExtendedFiniteReal(sign)
+    assert math.isinf(float(value))
+    assert -math.inf < value < math.inf
+    assert default_serializer({"mean": value}) == f'{{"mean":"{value}"}}'
+
+
+async def test_extended_finite_real_does_not_become_a_tool_error() -> None:
+    server = FastMCP()
+    value = ExtendedFiniteReal(1)
+
+    @server.tool
+    def stats() -> Any:
+        return {"mean": value}
+
+    async with Client(server) as client:
+        result = await client.call_tool("stats", {}, raise_on_error=False)
+
+    assert result.is_error is False
+    assert isinstance(result.content[0], TextContent)
+    assert result.content[0].text == f'{{"mean":"{value}"}}'
 
 
 def test_default_serializer_preserves_finite_values_and_nan_strings() -> None:

@@ -83,6 +83,12 @@ def _text_fallback(value: Any) -> str | float:
             # A finite real, such as a large Fraction, may not fit in a float.
             return str(value)
         if not math.isfinite(numeric):
+            try:
+                if -math.inf < value < math.inf:
+                    # Wider finite reals can saturate when coerced to float.
+                    return str(value)
+            except TypeError:
+                pass
             # Keep the numeric value visible to the text JSON boundary.
             return numeric
     return str(value)
