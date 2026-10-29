@@ -86,6 +86,9 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    GetCoreSchemaHandler,
+    GetJsonSchemaHandler,
+    GetPydanticSchema,
     Json,
     PlainValidator,
     StringConstraints,
@@ -95,6 +98,7 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 from pydantic_core import SchemaError as _PydanticSchemaError
+from pydantic_core import core_schema
 from typing_extensions import NotRequired, TypedDict
 
 __all__ = ["JSONSchema", "json_schema_to_type"]
@@ -292,6 +296,10 @@ def json_schema_to_type(
 
     Returns:
         A Python type (typically a dataclass for objects) with Pydantic validation
+
+        Positional arrays validate each present ``prefixItems`` position and
+        apply ``items`` only to the tail. Arrays pinned to the prefix length
+        hydrate as tuples; other arrays remain lists and preserve prefix values.
 
     Raises:
         ValueError: If a name is provided for a non-object schema, or if the
@@ -676,6 +684,90 @@ def _validate_unique_items(value: Any) -> Any:
     return value
 
 
+def _create_prefix_items_type(
+    prefix_types: tuple[Any, ...], item_type: Any, schema: Mapping[str, Any]
+) -> Any:
+    """Validate unpinned positions without changing their existing list values."""
+    minimum = _count(schema.get("minItems"))
+    maximum = _count(schema.get("maxItems"), maximum=True)
+
+    def preserve_value(
+        value: Any, handler: core_schema.ValidatorFunctionWrapHandler
+    ) -> Any:
+        handler(value)
+        return value
+
+    def validate_list(
+        value: Any, handler: core_schema.ValidatorFunctionWrapHandler
+    ) -> list[Any]:
+        if not isinstance(value, list):
+            return list(handler(value))
+        if minimum is not None and len(value) < minimum:
+            raise ValueError(f"Array should have at least {minimum} items")
+        if maximum is not None and len(value) > maximum:
+            raise ValueError(f"Array should have at most {maximum} items")
+        # Missing prefix positions are optional. Discard the defaults used by
+        # the tuple validator instead of appending values to a shorter array.
+        return list(handler(tuple(value))[: len(value)])
+
+    def serialize_list(
+        value: list[Any], handler: core_schema.SerializerFunctionWrapHandler
+    ) -> list[Any]:
+        return list(handler(tuple(value)))
+
+    def build_schema(
+        _source: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        positions: list[core_schema.CoreSchema] = [
+            core_schema.with_default_schema(
+                core_schema.no_info_wrap_validator_function(
+                    preserve_value,
+                    handler.generate_schema(position_type),
+                    serialization=core_schema.simple_ser_schema("any"),
+                ),
+                default=None,
+            )
+            for position_type in prefix_types
+        ]
+        positions.append(handler.generate_schema(item_type))
+        positional_schema = core_schema.tuple_schema(
+            positions,
+            variadic_item_index=len(prefix_types),
+            min_length=0,
+        )
+        validated = core_schema.no_info_wrap_validator_function(
+            validate_list, positional_schema
+        )
+        return core_schema.json_or_python_schema(
+            json_schema=validated,
+            python_schema=core_schema.chain_schema(
+                [core_schema.list_schema(), validated]
+            ),
+            serialization=core_schema.wrap_serializer_function_ser_schema(
+                serialize_list, schema=positional_schema
+            ),
+        )
+
+    def build_json_schema(
+        core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> dict[str, Any]:
+        result = handler(core)
+        if minimum is not None:
+            result["minItems"] = minimum
+        if maximum is not None:
+            result["maxItems"] = maximum
+        for index, position in enumerate(result.get("prefixItems", [])):
+            if prefix_types[index] is _UnsatisfiableType:
+                result["prefixItems"][index] = False
+            elif isinstance(position, dict):
+                position.pop("default", None)
+        if item_type is _UnsatisfiableType:
+            result["items"] = False
+        return result
+
+    return Annotated[list[Any], GetPydanticSchema(build_schema, build_json_schema)]
+
+
 def _create_array_type(
     schema: Mapping[str, Any],
     schemas: Mapping[str, Any],
@@ -696,6 +788,19 @@ def _create_array_type(
             _schema_to_type(s, schemas, resolving_refs) for s in prefix_items
         )
         base = tuple[positional_types]  # type: ignore[valid-type]  # ty:ignore[invalid-type-form]
+    elif isinstance(prefix_items, list):
+        prefix_types = tuple(
+            _schema_to_type(s, schemas, resolving_refs) for s in prefix_items
+        )
+        item_type = _schema_to_type(items, schemas, resolving_refs)
+        base = _create_prefix_items_type(prefix_types, item_type, schema)
+        if schema.get("uniqueItems") is True:
+            return Annotated[
+                base,
+                BeforeValidator(_validate_unique_items),
+                Field(json_schema_extra={"uniqueItems": True}),
+            ]
+        return base
     elif isinstance(items, list):
         # Handle positional item schemas
         item_types = [_schema_to_type(s, schemas, resolving_refs) for s in items]
