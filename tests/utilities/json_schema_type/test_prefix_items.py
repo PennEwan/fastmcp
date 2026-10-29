@@ -86,6 +86,7 @@ def test_unpinned_prefix_and_tail_formats_keep_existing_hydration() -> None:
     assert type(result) is list
     assert adapter.dump_python(result) == result
     assert adapter.dump_json(result) == b'["2026-10-29","2026-10-30"]'
+    assert adapter.validate_json('["2026-10-29","2026-10-30"]', strict=True) == result
 
 
 @pytest.mark.parametrize("tail", [{}, {"items": True}, {"items": {}}])
@@ -104,6 +105,7 @@ def test_unrestricted_tail_preserves_existing_prefix_values(
     result = adapter.validate_python(["2026-10-29", "tail"])
     assert result == ["2026-10-29", "tail"]
     assert type(result[0]) is str
+    assert adapter.validate_json('["2026-10-29","tail"]', strict=True) == result
 
 
 async def test_client_hydrates_date_prefix_with_date_tail() -> None:

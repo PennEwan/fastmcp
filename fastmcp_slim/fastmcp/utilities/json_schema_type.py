@@ -720,30 +720,47 @@ def _create_prefix_items_type(
     def build_schema(
         _source: Any, handler: GetCoreSchemaHandler
     ) -> core_schema.CoreSchema:
-        positions: list[core_schema.CoreSchema] = [
-            core_schema.with_default_schema(
-                core_schema.no_info_wrap_validator_function(
-                    preserve_value,
-                    handler.generate_schema(position_type),
-                    serialization=core_schema.simple_ser_schema("any"),
+        def build_positions(json_input: bool) -> core_schema.CoreSchema:
+            def item_schema(item: Any) -> core_schema.CoreSchema:
+                converted = handler.generate_schema(item)
+                if json_input:
+                    # A wrap handler receives Python values. Restore JSON input
+                    # semantics so strict dates still accept JSON date strings.
+                    return core_schema.no_info_before_validator_function(
+                        json.dumps,
+                        core_schema.json_schema(converted),
+                        json_schema_input_schema=converted,
+                    )
+                return converted
+
+            positions: list[core_schema.CoreSchema] = [
+                core_schema.with_default_schema(
+                    core_schema.no_info_wrap_validator_function(
+                        preserve_value,
+                        item_schema(position_type),
+                        serialization=core_schema.simple_ser_schema("any"),
+                    )
+                    if preserve_prefix_values
+                    else item_schema(position_type),
+                    default=None,
                 )
-                if preserve_prefix_values
-                else handler.generate_schema(position_type),
-                default=None,
+                for position_type in prefix_types
+            ]
+            positions.append(item_schema(item_type))
+            return core_schema.tuple_schema(
+                positions,
+                variadic_item_index=len(prefix_types),
+                min_length=0,
             )
-            for position_type in prefix_types
-        ]
-        positions.append(handler.generate_schema(item_type))
-        positional_schema = core_schema.tuple_schema(
-            positions,
-            variadic_item_index=len(prefix_types),
-            min_length=0,
-        )
+
+        positional_schema = build_positions(json_input=False)
         validated = core_schema.no_info_wrap_validator_function(
             validate_list, positional_schema
         )
         return core_schema.json_or_python_schema(
-            json_schema=validated,
+            json_schema=core_schema.no_info_wrap_validator_function(
+                validate_list, build_positions(json_input=True)
+            ),
             python_schema=core_schema.chain_schema(
                 [core_schema.list_schema(), validated]
             ),
