@@ -551,6 +551,8 @@ When your tool returns a primitive type (int, str, bool) or a collection (list, 
 
 The default JSON text conversion raises `ToolError` for non-finite floats (`NaN`, `Infinity`, and `-Infinity`), including values nested in collections. Return `None` when a missing numeric value should become JSON `null`, or serialize it explicitly with `ToolResult` when you want a textual representation. Pydantic models keep their own serialization policies and custom serializers.
 
+Non-finite float dictionary keys become the JSON strings `"nan"`, `"inf"`, and `"-inf"`. Earlier default text conversion encoded all three as `"None"`; convert keys explicitly before returning them if you need to retain that spelling. Decimal values keep their existing string encoding.
+
 Without a type annotation, the tool only produces `content`:
 
 <CodeGroup>

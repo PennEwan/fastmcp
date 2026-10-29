@@ -144,8 +144,14 @@ def test_default_serializer_preserves_finite_values_and_nan_strings() -> None:
     )
 
 
-def test_default_serializer_preserves_nan_key_stringification() -> None:
-    assert default_serializer({math.nan: 1}) == '{"nan":1}'
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [(math.nan, "nan"), (math.inf, "inf"), (-math.inf, "-inf")],
+)
+def test_default_serializer_stringifies_nonfinite_keys(
+    key: float, expected: str
+) -> None:
+    assert default_serializer({key: 1}) == f'{{"{expected}":1}}'
 
 
 def test_default_serializer_preserves_decimal_nan_string_encoding() -> None:
