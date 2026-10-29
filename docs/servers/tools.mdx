@@ -549,6 +549,8 @@ def get_user_data(user_id: str) -> dict:
 
 When your tool returns a primitive type (int, str, bool) or a collection (list, set), FastMCP needs a return type annotation to generate structured content. The annotation tells FastMCP how to validate and serialize the result. The annotation has to say something about the items: a bare `list`, `tuple`, or `Sequence` (or `list[Any]`) describes nothing, so FastMCP infers no output schema for it, the same as for `Any`. Use `list[int]`, `list[dict]`, and so on when you want structured output for a collection.
 
+The default JSON text conversion raises `ToolError` for non-finite floats (`NaN`, `Infinity`, and `-Infinity`), including values nested in collections. Return `None` when a missing numeric value should become JSON `null`, or serialize it explicitly with `ToolResult` when you want a textual representation. Pydantic models keep their own serialization policies and custom serializers.
+
 Without a type annotation, the tool only produces `content`:
 
 <CodeGroup>
