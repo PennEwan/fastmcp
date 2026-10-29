@@ -70,7 +70,7 @@ def test_prefix_items_reject_invalid_tail(items: Any) -> None:
         adapter.validate_python(["a", "invalid"])
 
 
-def test_unpinned_prefix_formats_keep_existing_values_and_list_output() -> None:
+def test_unpinned_prefix_and_tail_formats_keep_existing_hydration() -> None:
     adapter = TypeAdapter(
         json_schema_to_type(
             {
@@ -81,10 +81,56 @@ def test_unpinned_prefix_formats_keep_existing_values_and_list_output() -> None:
         )
     )
     result = adapter.validate_python(["2026-10-29", "2026-10-30"])
-    assert result == ["2026-10-29", date(2026, 10, 30)]
-    assert type(result[0]) is str
+    assert result == [date(2026, 10, 29), date(2026, 10, 30)]
+    assert type(result[0]) is date
+    assert type(result) is list
     assert adapter.dump_python(result) == result
     assert adapter.dump_json(result) == b'["2026-10-29","2026-10-30"]'
+
+
+@pytest.mark.parametrize("tail", [{}, {"items": True}, {"items": {}}])
+def test_unrestricted_tail_preserves_existing_prefix_values(
+    tail: dict[str, Any],
+) -> None:
+    adapter = TypeAdapter(
+        json_schema_to_type(
+            {
+                "type": "array",
+                "prefixItems": [{"type": "string", "format": "date"}],
+                **tail,
+            }
+        )
+    )
+    result = adapter.validate_python(["2026-10-29", "tail"])
+    assert result == ["2026-10-29", "tail"]
+    assert type(result[0]) is str
+
+
+async def test_client_hydrates_date_prefix_with_date_tail() -> None:
+    server = FastMCP()
+
+    @server.tool(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "array",
+                    "prefixItems": [{"type": "string", "format": "date"}],
+                    "items": {"type": "string", "format": "date"},
+                }
+            },
+            "required": ["value"],
+        }
+    )
+    def read_dates() -> dict[str, Any]:
+        return {"value": ["2026-10-29", "2026-10-30"]}
+
+    async with Client(server) as client:
+        result = await client.call_tool("read_dates")
+
+    assert result.structured_content == {"value": ["2026-10-29", "2026-10-30"]}
+    assert result.data.value == [date(2026, 10, 29), date(2026, 10, 30)]
+    assert type(result.data.value[0]) is date
 
 
 @pytest.mark.parametrize("value", [[], ["a", 1, 2], ["a", "a"]])

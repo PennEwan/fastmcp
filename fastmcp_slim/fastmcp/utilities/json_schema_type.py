@@ -299,7 +299,8 @@ def json_schema_to_type(
 
         Positional arrays validate each present ``prefixItems`` position and
         apply ``items`` only to the tail. Arrays pinned to the prefix length
-        hydrate as tuples; other arrays remain lists and preserve prefix values.
+        hydrate as tuples; other arrays remain lists. Unrestricted tails preserve
+        prefix values for compatibility; constrained tails hydrate each position.
 
     Raises:
         ValueError: If a name is provided for a non-object schema, or if the
@@ -687,9 +688,10 @@ def _validate_unique_items(value: Any) -> Any:
 def _create_prefix_items_type(
     prefix_types: tuple[Any, ...], item_type: Any, schema: Mapping[str, Any]
 ) -> Any:
-    """Validate unpinned positions without changing their existing list values."""
+    """Validate positions while preserving unrestricted-list compatibility."""
     minimum = _count(schema.get("minItems"))
     maximum = _count(schema.get("maxItems"), maximum=True)
+    preserve_prefix_values = item_type is Any or item_type is object
 
     def preserve_value(
         value: Any, handler: core_schema.ValidatorFunctionWrapHandler
@@ -724,7 +726,9 @@ def _create_prefix_items_type(
                     preserve_value,
                     handler.generate_schema(position_type),
                     serialization=core_schema.simple_ser_schema("any"),
-                ),
+                )
+                if preserve_prefix_values
+                else handler.generate_schema(position_type),
                 default=None,
             )
             for position_type in prefix_types
