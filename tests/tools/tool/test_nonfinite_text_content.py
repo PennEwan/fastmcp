@@ -1,5 +1,6 @@
 """Default text serialization must not silently turn non-finite floats into null."""
 
+import json
 import math
 from decimal import Decimal
 from fractions import Fraction
@@ -152,6 +153,11 @@ def test_default_serializer_stringifies_nonfinite_keys(
     key: float, expected: str
 ) -> None:
     assert default_serializer({key: 1}) == f'{{"{expected}":1}}'
+
+
+def test_default_serializer_keeps_distinct_nonfinite_keys() -> None:
+    payload = default_serializer({math.nan: 1, math.inf: 2, -math.inf: 3})
+    assert json.loads(payload) == {"nan": 1, "inf": 2, "-inf": 3}
 
 
 def test_default_serializer_preserves_decimal_nan_string_encoding() -> None:
