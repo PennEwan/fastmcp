@@ -1,6 +1,7 @@
 """Default text serialization must not silently turn non-finite floats into null."""
 
 import math
+from decimal import Decimal
 from fractions import Fraction
 from numbers import Real
 from typing import Annotated, Any, Literal
@@ -100,6 +101,14 @@ def test_default_serializer_preserves_finite_values_and_nan_strings() -> None:
     assert default_serializer({"note": "NaN, Infinity and -Infinity"}) == (
         '{"note":"NaN, Infinity and -Infinity"}'
     )
+
+
+def test_default_serializer_preserves_nan_key_stringification() -> None:
+    assert default_serializer({math.nan: 1}) == '{"nan":1}'
+
+
+def test_default_serializer_preserves_decimal_nan_string_encoding() -> None:
+    assert default_serializer(Decimal("NaN")) == '"NaN"'
 
 
 @pytest.mark.parametrize("policy", ["null", "strings"])
