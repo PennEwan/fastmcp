@@ -11,6 +11,7 @@ from fastmcp.utilities.json_schema import (
     _SUBSCHEMA_VALUE_KEYS,
     _copy_schema,
 )
+from fastmcp.utilities.json_schema_type import _json_values_equal
 from fastmcp.utilities.logging import get_logger
 
 from .json_schema_converter import (
@@ -970,7 +971,7 @@ def extract_output_schema_from_responses(
         )
         if schema is None:
             return None
-        if schema not in output_schemas:
+        if not any(_json_values_equal(schema, existing) for existing in output_schemas):
             output_schemas.append(schema)
 
     if len(output_schemas) == 1:
@@ -1098,8 +1099,19 @@ def _combine_response_output_schemas(schemas: list[dict[str, Any]]) -> dict[str,
     definitions: dict[str, Any] = {}
     conflicting_defs = False
     for schema in schemas:
+        response_schema = (
+            schema["properties"]["result"]
+            if schema.get("x-fastmcp-wrap-result")
+            else schema
+        )
+        # A named schema is its own resource: its definitions cannot be hoisted
+        # into the surrounding union without changing local reference targets.
+        if "$id" in response_schema:
+            continue
         for name, definition in schema.get("$defs", {}).items():
-            if name in definitions and definitions[name] != definition:
+            if name in definitions and not _json_values_equal(
+                definitions[name], definition
+            ):
                 conflicting_defs = True
             definitions[name] = definition
 
@@ -1114,6 +1126,9 @@ def _combine_response_output_schemas(schemas: list[dict[str, Any]]) -> dict[str,
         else:
             branch = _copy_schema(schema)
             branch.pop("x-fastmcp-wrap-result", None)
+        if "$id" in branch:
+            branches.append(branch)
+            continue
         if conflicting_defs:
             branch["$defs"] = _copy_schema(schema.get("$defs", {}))
         else:
@@ -1155,11 +1170,13 @@ def _combine_response_output_schemas(schemas: list[dict[str, Any]]) -> dict[str,
 
 
 def _response_schema_nodes(schema: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Walk schema containers without interpreting literal example/default data."""
+    """Walk one schema resource, excluding named resources and literal data."""
     stack: list[Any] = [schema]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
+            if "$id" in node:
+                continue
             yield node
             for key, value in node.items():
                 if key in _SUBSCHEMA_MAP_KEYS and isinstance(value, dict):

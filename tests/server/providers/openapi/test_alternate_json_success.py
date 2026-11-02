@@ -6,8 +6,11 @@ from typing import Any
 
 import httpx2
 import pytest
+from jsonschema import Draft202012Validator
 
 from fastmcp import Client, FastMCP
+from fastmcp.utilities.openapi import parse_openapi_to_http_routes
+from fastmcp.utilities.openapi.schemas import extract_output_schema_from_responses
 
 READY_SCHEMA = {
     "type": "object",
@@ -204,3 +207,97 @@ async def test_disabled_validation_preserves_primary_response_wrapping(
     expected = payload if status_code == 200 else {"result": payload}
     assert result.structured_content == expected
     assert result.data == expected
+
+
+@pytest.mark.parametrize("status_code", [200, 202])
+@pytest.mark.parametrize("local_definitions", [False, True])
+async def test_boolean_and_number_success_values_remain_distinct(
+    status_code: int, local_definitions: bool
+) -> None:
+    responses = {}
+    for code, value in [("200", 1), ("202", True)]:
+        value_schema = {"enum": [value]}
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"value": value_schema},
+            "required": ["value"],
+        }
+        if local_definitions:
+            # Distinct response shapes must not share conflicting definitions.
+            schema["properties"] = {
+                "kind": {"enum": [code]},
+                "value": {"$ref": "#/$defs/Value"},
+            }
+            schema["required"] = ["kind", "value"]
+            schema["$defs"] = {"Value": value_schema}
+        responses[code] = response(schema)
+
+    expected: dict[str, Any] = {"value": 1 if status_code == 200 else True}
+    if local_definitions:
+        expected["kind"] = str(status_code)
+    _, result = await call_report(spec_for(responses), status_code, expected)
+    assert result.structured_content == expected
+    assert type(result.structured_content["value"]) is type(expected["value"])
+
+
+@pytest.mark.parametrize("status_code", [200, 202])
+@pytest.mark.parametrize("conflicting_definitions", [False, True])
+async def test_response_schema_ids_keep_local_definitions(
+    status_code: int, conflicting_definitions: bool
+) -> None:
+    responses = {}
+    for code in ["200", "202"]:
+        value_type = (
+            "string" if conflicting_definitions and code == "202" else "integer"
+        )
+        schema = {
+            "$id": f"https://schemas.example.test/reports/{code}",
+            "type": "object",
+            "properties": {"value": {"$ref": "#/$defs/Value"}},
+            "required": ["value"],
+            "$defs": {"Value": {"type": value_type}},
+        }
+        responses[code] = response(schema)
+    spec = spec_for(responses)
+    before = deepcopy(spec)
+    value = "job-42" if conflicting_definitions and status_code == 202 else 42
+
+    # Validate the exported schema before Tool's compression can inline refs.
+    (route,) = parse_openapi_to_http_routes(spec)
+    output_schema = extract_output_schema_from_responses(
+        route.responses, route.response_schemas, route.openapi_version
+    )
+    assert output_schema is not None
+    Draft202012Validator(output_schema).validate({"value": value})
+
+    _, result = await call_report(spec, status_code, {"value": value})
+
+    assert result.structured_content == {"value": value}
+    assert spec == before
+
+
+@pytest.mark.parametrize("status_code", [200, 202])
+async def test_embedded_schema_ids_keep_their_reference_scope(status_code: int) -> None:
+    responses = {}
+    for code in ["200", "202"]:
+        schema = {
+            "type": "object",
+            "properties": {
+                "kind": {"$ref": "#/$defs/Kind"},
+                "item": {
+                    "$id": f"https://schemas.example.test/items/{code}",
+                    "type": "object",
+                    "properties": {"value": {"$ref": "#/$defs/Value"}},
+                    "required": ["value"],
+                    "$defs": {"Value": {"type": "integer"}},
+                },
+            },
+            "required": ["kind", "item"],
+            "$defs": {"Kind": {"enum": [code]}},
+        }
+        responses[code] = response(schema)
+    expected = {"kind": str(status_code), "item": {"value": 42}}
+
+    _, result = await call_report(spec_for(responses), status_code, expected)
+
+    assert result.structured_content == expected
